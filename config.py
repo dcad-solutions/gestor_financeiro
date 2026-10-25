@@ -23,8 +23,8 @@ GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv(
     "GOOGLE_SERVICE_ACCOUNT_FILE", str(BASE_DIR / "credentials.json")
 )
 
-# URL do Dashboard Streamlit (utiliza o IP local da máquina para permitir acesso via celular)
-DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://192.168.0.60:8501")
+# URL do Dashboard Streamlit na Nuvem (Streamlit Cloud)
+DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://gestor-dcad.streamlit.app")
 
 # Centros de Custo suportados
 CENTROS_DE_CUSTO = ["Casa", "Consultório", "D-CAD"]
