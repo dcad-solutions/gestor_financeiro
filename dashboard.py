@@ -90,6 +90,13 @@ def main():
         ["Todos (Consolidado)"] + CENTROS_DE_CUSTO
     )
 
+    # Filtro de Usuário (Lançado Por)
+    usuario_selecionado = "Todos"
+    if "Lançado Por" in df_raw.columns:
+        usuarios = [str(u) for u in df_raw["Lançado Por"].dropna().unique() if str(u).strip()]
+        if len(usuarios) > 1:
+            usuario_selecionado = st.sidebar.selectbox("👤 Lançado Por", ["Todos"] + sorted(usuarios))
+
     # Filtro de Período
     opcoes_periodo = ["Mês Atual", "Últimos 30 Dias", "Últimos 90 Dias", "Ano Atual", "Todo o Período", "Personalizado"]
     periodo_escolhido = st.sidebar.selectbox("Período de Tempo", opcoes_periodo)
@@ -124,6 +131,9 @@ def main():
 
     if centro_selecionado != "Todos (Consolidado)":
         df = df[df["Centro de Custo"] == centro_selecionado]
+
+    if usuario_selecionado != "Todos" and "Lançado Por" in df.columns:
+        df = df[df["Lançado Por"] == usuario_selecionado]
 
     # Cálculos Principais
     total_despesas = df[df["Tipo"] == "Despesa"]["Valor"].sum()
@@ -264,7 +274,7 @@ def main():
         df_exibicao = df_exibicao.sort_values(by=["Data", "Hora"], ascending=False)
 
     colunas_visiveis = [
-        "Data", "Hora", "Centro de Custo", "Tipo", "Valor", "Categoria", "Descrição", "Forma de Pagamento", "Origem"
+        "Data", "Hora", "Centro de Custo", "Tipo", "Valor", "Categoria", "Descrição", "Forma de Pagamento", "Lançado Por", "Origem"
     ]
     cols_existentes = [c for c in colunas_visiveis if c in df_exibicao.columns]
 

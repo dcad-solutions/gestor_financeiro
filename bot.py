@@ -58,6 +58,18 @@ def is_user_allowed(user_id: int) -> bool:
     return user_id in ALLOWED_TELEGRAM_USERS
 
 
+def get_user_display_name(user) -> str:
+    """Retorna o nome amigável do usuário do Telegram."""
+    if not user:
+        return "Desconhecido"
+    nome = user.first_name or ""
+    if user.last_name:
+        nome += f" {user.last_name}"
+    if user.username:
+        nome += f" (@{user.username})"
+    return nome.strip() or f"User_{user.id}"
+
+
 async def check_auth(update: Update) -> bool:
     """Garante autenticação do usuário."""
     user = update.effective_user
@@ -250,6 +262,7 @@ def format_transaction_card(tx: Dict) -> str:
     centro = tx.get("centro_custo", "Indefinido")
     centro_emoji = {"Casa": "🏠", "Consultório": "🩺", "D-CAD": "💻"}.get(centro, "❓")
 
+    lancado_por = tx.get("lancado_por", "Você")
     return (
         f"📝 *Revisão do Lançamento:*\n\n"
         f"• *Tipo:* {tipo_emoji}\n"
@@ -258,6 +271,7 @@ def format_transaction_card(tx: Dict) -> str:
         f"• *Categoria:* {tx.get('categoria', 'Geral')}\n"
         f"• *Descrição:* {tx.get('descricao', '-')}\n"
         f"• *Pagamento:* {tx.get('forma_pagamento', 'Não informado')}\n"
+        f"• *Lançado por:* 👤 {lancado_por}\n"
         f"• *Data:* `{tx.get('data', datetime.now().strftime('%Y-%m-%d'))}`\n"
     )
 
@@ -273,8 +287,10 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
     try:
+        user_name = get_user_display_name(update.effective_user)
         parsed = ai_agent.parse_text(user_text)
         parsed["origem"] = "Texto Telegram"
+        parsed["lancado_por"] = user_name
         pending_transactions[user_id] = parsed
 
         tem_centro = (
@@ -314,8 +330,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await file_obj.download_to_drive(temp_audio_path)
 
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        user_name = get_user_display_name(update.effective_user)
         parsed = ai_agent.parse_audio(temp_audio_path)
         parsed["origem"] = "Áudio Telegram"
+        parsed["lancado_por"] = user_name
         pending_transactions[user_id] = parsed
 
         tem_centro = (
@@ -360,8 +378,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await file_obj.download_to_drive(temp_img_path)
 
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        user_name = get_user_display_name(update.effective_user)
         parsed = ai_agent.parse_image(temp_img_path, user_caption=caption)
         parsed["origem"] = "Comprovante/Foto Telegram"
+        parsed["lancado_por"] = user_name
         pending_transactions[user_id] = parsed
 
         tem_centro = (
@@ -438,6 +458,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 categoria=tx.get("categoria", "Geral"),
                 descricao=tx.get("descricao", "Sem descrição"),
                 forma_pagamento=tx.get("forma_pagamento", "Não especificado"),
+                lancado_por=tx.get("lancado_por", "Desconhecido"),
                 origem=tx.get("origem", "Telegram"),
                 data_personalizada=tx.get("data")
             )
@@ -458,7 +479,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 f"📁 *Centro de Custo:* {res['centro_custo']}\n"
                 f"💰 *Valor:* `R$ {res['valor']:,.2f}`\n"
                 f"🏷️ *Categoria:* {res['categoria']}\n"
-                f"📝 *Descrição:* {res['descricao']}\n\n"
+                f"📝 *Descrição:* {res['descricao']}\n"
+                f"👤 *Lançado por:* {res.get('lancado_por', 'Você')}\n\n"
                 f"_A planilha e o dashboard já foram atualizados em tempo real!_",
                 reply_markup=InlineKeyboardMarkup(success_keyboard),
                 parse_mode=ParseMode.MARKDOWN

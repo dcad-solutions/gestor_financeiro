@@ -28,6 +28,7 @@ COLUMNS = [
     "Categoria",
     "Descrição",
     "Forma de Pagamento",
+    "Lançado Por",
     "Origem"
 ]
 
@@ -92,18 +93,19 @@ class SheetsService:
             master_sheet.append_row(COLUMNS)
         else:
             master_sheet = self.spreadsheet.worksheet("Todas as Transações")
-            first_row = master_sheet.row_values(1)
-            if not first_row:
-                master_sheet.append_row(COLUMNS)
+            master_sheet.update("A1:K1", [COLUMNS])
 
         # 2. Cria abas específicas para cada Centro de Custo usando fórmula automática FILTER
         for centro in CENTROS_DE_CUSTO:
             if centro not in existing_sheets:
                 sub_sheet = self.spreadsheet.add_worksheet(title=centro, rows=500, cols=len(COLUMNS))
-                # Insere o cabeçalho
                 sub_sheet.append_row(COLUMNS)
-                # Na célula A2, adiciona a fórmula de filtro dinâmico
-                formula = f"=IFERROR(FILTER('Todas as Transações'!A2:J, 'Todas as Transações'!D2:D = \"{centro}\"), \"Nenhum registro para {centro}\")"
+                formula = f"=IFERROR(FILTER('Todas as Transações'!A2:K, 'Todas as Transações'!D2:D = \"{centro}\"), \"Nenhum registro para {centro}\")"
+                sub_sheet.update_acell("A2", formula)
+            else:
+                sub_sheet = self.spreadsheet.worksheet(centro)
+                sub_sheet.update("A1:K1", [COLUMNS])
+                formula = f"=IFERROR(FILTER('Todas as Transações'!A2:K, 'Todas as Transações'!D2:D = \"{centro}\"), \"Nenhum registro para {centro}\")"
                 sub_sheet.update_acell("A2", formula)
 
         # Remove a aba padrão 'Sheet1' ou 'Página1' se for nova
@@ -122,6 +124,7 @@ class SheetsService:
         categoria: str,
         descricao: str,
         forma_pagamento: str = "Não especificado",
+        lancado_por: str = "Desconhecido",
         origem: str = "Telegram",
         data_personalizada: Optional[str] = None
     ) -> Dict:
@@ -160,6 +163,7 @@ class SheetsService:
             categoria.strip(),
             descricao.strip(),
             forma_pagamento.strip(),
+            lancado_por.strip(),
             origem.strip()
         ]
 
@@ -174,7 +178,8 @@ class SheetsService:
             "valor": float(valor),
             "categoria": categoria,
             "descricao": descricao,
-            "forma_pagamento": forma_pagamento
+            "forma_pagamento": forma_pagamento,
+            "lancado_por": lancado_por
         }
 
     def get_all_transactions(self) -> pd.DataFrame:
