@@ -1,0 +1,19 @@
+# Arquivos com chaves e credenciais confidenciais
+.env
+credentials.json
+*.json
+
+# Ambientes virtuais
+venv/
+.venv/
+env/
+
+# Cache Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Arquivos do sistema
+.DS_Store
+.idea/
+.vscode/
