@@ -12,8 +12,16 @@ from config import (
     CARTOES_PADRAO
 )
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+api_key = GEMINI_API_KEY
+try:
+    import streamlit as st
+    if not api_key and hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
+        api_key = st.secrets["GEMINI_API_KEY"]
+except Exception:
+    pass
+
+if api_key:
+    genai.configure(api_key=api_key)
 
 MODEL_NAME = "gemini-3.5-flash"
 

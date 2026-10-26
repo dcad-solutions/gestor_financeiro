@@ -134,18 +134,19 @@ def main():
     periodo_escolhido = st.sidebar.selectbox("Período de Tempo", opcoes_periodo)
 
     hoje = datetime.now()
+    fim_do_dia = datetime.combine(hoje.date(), datetime.max.time())
     if periodo_escolhido == "Mês Atual":
         data_inicio = datetime(hoje.year, hoje.month, 1)
-        data_fim = hoje
+        data_fim = fim_do_dia
     elif periodo_escolhido == "Últimos 30 Dias":
         data_inicio = hoje - timedelta(days=30)
-        data_fim = hoje
+        data_fim = fim_do_dia
     elif periodo_escolhido == "Últimos 90 Dias":
         data_inicio = hoje - timedelta(days=90)
-        data_fim = hoje
+        data_fim = fim_do_dia
     elif periodo_escolhido == "Ano Atual":
         data_inicio = datetime(hoje.year, 1, 1)
-        data_fim = hoje
+        data_fim = fim_do_dia
     elif periodo_escolhido == "Personalizado":
         col_d1, col_d2 = st.sidebar.columns(2)
         d_ini = col_d1.date_input("Início", (hoje - timedelta(days=30)).date())
@@ -158,7 +159,7 @@ def main():
             data_inicio = min_data.to_pydatetime() if hasattr(min_data, "to_pydatetime") else hoje
         else:
             data_inicio = hoje
-        data_fim = hoje
+        data_fim = fim_do_dia
 
     # Aplicação dos Filtros em df
     df = df_raw.copy()

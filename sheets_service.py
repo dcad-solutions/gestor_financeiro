@@ -102,37 +102,52 @@ class SheetsService:
     def _authenticate(self):
         """Autentica com a conta de serviço do Google Cloud (suporta arquivo local e Streamlit Cloud Secrets)."""
         credentials = None
+        secrets_error = None
 
         # 1. Tenta carregar do Streamlit Secrets (quando hospedado na nuvem do Streamlit)
         try:
             import streamlit as st
-            if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
-                secret_dict = dict(st.secrets["gcp_service_account"])
-                credentials = Credentials.from_service_account_info(
-                    secret_dict, scopes=SCOPES
-                )
-        except Exception:
-            pass
+            if hasattr(st, "secrets"):
+                secret_dict = None
+                if "gcp_service_account" in st.secrets:
+                    secret_dict = dict(st.secrets["gcp_service_account"])
+                elif "gserviceaccount" in st.secrets:
+                    secret_dict = dict(st.secrets["gserviceaccount"])
+
+                if secret_dict:
+                    if "private_key" in secret_dict and isinstance(secret_dict["private_key"], str):
+                        secret_dict["private_key"] = secret_dict["private_key"].replace("\\n", "\n")
+                    credentials = Credentials.from_service_account_info(
+                        secret_dict, scopes=SCOPES
+                    )
+        except Exception as e:
+            secrets_error = str(e)
+            logger.warning(f"Erro ao autenticar via st.secrets: {e}")
 
         # 2. Se não estiver no Streamlit Secrets, usa o arquivo credentials.json local
         if not credentials:
             cred_path = Path(GOOGLE_SERVICE_ACCOUNT_FILE)
-            if not cred_path.exists():
-                raise FileNotFoundError(
-                    f"Arquivo de credenciais não encontrado: {GOOGLE_SERVICE_ACCOUNT_FILE}. "
-                    "Baixe o JSON da Service Account do Google Cloud e salve neste caminho."
+            if cred_path.exists():
+                credentials = Credentials.from_service_account_file(
+                    str(cred_path), scopes=SCOPES
                 )
-            credentials = Credentials.from_service_account_file(
-                str(cred_path), scopes=SCOPES
-            )
+            else:
+                detalhe = f" (Detalhes do st.secrets: {secrets_error})" if secrets_error else " (Chave 'gcp_service_account' não encontrada em st.secrets)."
+                raise FileNotFoundError(
+                    f"Credenciais do Google Cloud não encontradas no servidor.{detalhe} "
+                    "Configure o bloco [gcp_service_account] em Secrets no painel do Streamlit Cloud."
+                )
 
         self.client = gspread.authorize(credentials)
 
         sheet_id = SPREADSHEET_ID
         try:
             import streamlit as st
-            if hasattr(st, "secrets") and "SPREADSHEET_ID" in st.secrets:
-                sheet_id = st.secrets["SPREADSHEET_ID"]
+            if hasattr(st, "secrets"):
+                if "SPREADSHEET_ID" in st.secrets:
+                    sheet_id = st.secrets["SPREADSHEET_ID"]
+                elif "spreadsheet_id" in st.secrets:
+                    sheet_id = st.secrets["spreadsheet_id"]
         except Exception:
             pass
 
