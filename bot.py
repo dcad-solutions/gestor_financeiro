@@ -1,8 +1,9 @@
 import os
+import json
 import tempfile
 import logging
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Optional
 
 from telegram import (
     Update,
@@ -22,6 +23,8 @@ from telegram.ext import (
 
 from config import (
     TELEGRAM_BOT_TOKEN,
+    ADMIN_TELEGRAM_USER,
+    ALLOWED_USERS_FILE,
     ALLOWED_TELEGRAM_USERS,
     SPREADSHEET_ID,
     CENTROS_DE_CUSTO,
@@ -50,12 +53,72 @@ ai_agent = FinancialAIAgent()
 # { user_id: { ...dados_transacao... } }
 pending_transactions: Dict[int, Dict] = {}
 
+# Solicitações de acesso pendentes de novos usuários aguardando aprovação do admin
+# { user_id: { "name": str, "username": str, "requested_at": str } }
+pending_access_requests: Dict[int, Dict] = {}
+
+
+def load_allowed_users() -> Dict[str, Dict]:
+    """Carrega usuários autorizados do arquivo JSON."""
+    if not ALLOWED_USERS_FILE.exists():
+        initial = {
+            str(ADMIN_TELEGRAM_USER): {
+                "name": "Dr. Leonardo Viana",
+                "role": "Admin",
+                "added_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+        }
+        try:
+            with open(ALLOWED_USERS_FILE, "w", encoding="utf-8") as f:
+                json.dump(initial, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        return initial
+
+    try:
+        with open(ALLOWED_USERS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Erro ao ler {ALLOWED_USERS_FILE}: {e}")
+        return {str(ADMIN_TELEGRAM_USER): {"name": "Admin", "role": "Admin"}}
+
+
+def save_allowed_user(user_id: int, name: str, username: Optional[str] = None):
+    """Salva um novo usuário na lista de autorizados."""
+    users = load_allowed_users()
+    users[str(user_id)] = {
+        "name": name,
+        "username": username or "",
+        "role": "Usuário Autorizado",
+        "added_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    with open(ALLOWED_USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(users, f, ensure_ascii=False, indent=2)
+
+
+def remove_allowed_user(user_id: int) -> bool:
+    """Remove um usuário da lista de autorizados."""
+    users = load_allowed_users()
+    if str(user_id) in users:
+        if user_id == ADMIN_TELEGRAM_USER:
+            return False  # Não permite remover o próprio admin
+        del users[str(user_id)]
+        with open(ALLOWED_USERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(users, f, ensure_ascii=False, indent=2)
+        return True
+    return False
+
 
 def is_user_allowed(user_id: int) -> bool:
-    """Verifica se o usuário está na lista de permissões."""
-    if not ALLOWED_TELEGRAM_USERS:
-        return True  # Se não configurado, libera para testes iniciais
-    return user_id in ALLOWED_TELEGRAM_USERS
+    """Verifica se o usuário é o admin ou está na lista de autorizados."""
+    if user_id == ADMIN_TELEGRAM_USER:
+        return True
+    users = load_allowed_users()
+    if str(user_id) in users:
+        return True
+    if ALLOWED_TELEGRAM_USERS and user_id in ALLOWED_TELEGRAM_USERS:
+        return True
+    return False
 
 
 def get_user_display_name(user) -> str:
@@ -70,23 +133,76 @@ def get_user_display_name(user) -> str:
     return nome.strip() or f"User_{user.id}"
 
 
-async def check_auth(update: Update) -> bool:
-    """Garante autenticação do usuário."""
+async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Garante autenticação do usuário ou envia pedido de autorização ao Admin."""
     user = update.effective_user
-    if not user or not is_user_allowed(user.id):
+    if not user:
+        return False
+
+    if is_user_allowed(user.id):
+        return True
+
+    user_name = get_user_display_name(user)
+    username_str = f"@{user.username}" if user.username else "Sem @username"
+
+    # Se já enviou solicitação e está pendente
+    if user.id in pending_access_requests:
         if update.message:
             await update.message.reply_text(
-                f"🚫 Acesso não autorizado.\nSeu ID do Telegram é: `{user.id}`\n"
-                "Adicione este ID na variável `ALLOWED_TELEGRAM_USERS` no arquivo `.env`.",
+                "⏳ *Sua solicitação de acesso já foi enviada ao Administrador.*\n"
+                "Você receberá uma mensagem aqui assim que o seu acesso for liberado!",
                 parse_mode=ParseMode.MARKDOWN
             )
         return False
-    return True
+
+    # Registra como pendente
+    pending_access_requests[user.id] = {
+        "name": user_name,
+        "username": user.username,
+        "requested_at": datetime.now().strftime("%H:%M:%S")
+    }
+
+    # Avisa o novo usuário
+    if update.message:
+        await update.message.reply_text(
+            f"👋 Olá, *{user.first_name}*!\n\n"
+            "🔒 *Acesso Restrito ao Gestor Financeiro*\n"
+            "Enviei uma solicitação de autorização diretamente ao Administrador no Telegram.\n\n"
+            "Você receberá uma notificação aqui assim que ele aprovar seu acesso!",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+    # Notifica o Administrador com botões interativos
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Autorizar Acesso", callback_data=f"auth_approve_{user.id}"),
+            InlineKeyboardButton("❌ Recusar", callback_data=f"auth_reject_{user.id}")
+        ]
+    ]
+    msg_admin = (
+        "🔔 *NOVA SOLICITAÇÃO DE ACESSO AO BOT FINANCEIRO*\n\n"
+        f"• *Nome:* {user_name}\n"
+        f"• *Username:* {username_str}\n"
+        f"• *ID do Telegram:* `{user.id}`\n\n"
+        "Deseja autorizar esta pessoa a registrar despesas e visualizar relatórios?"
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_TELEGRAM_USER,
+            text=msg_admin,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Erro ao notificar admin: {e}")
+
+    return False
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mensagem de boas-vindas e instruções."""
-    if not await check_auth(update):
+    if not await check_auth(update, context):
         return
 
     msg = (
@@ -130,7 +246,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Envia botões para abrir o dashboard web e a planilha."""
-    if not await check_auth(update):
+    if not await check_auth(update, context):
         return
 
     planilha_url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit" if SPREADSHEET_ID else "https://sheets.google.com"
@@ -159,7 +275,7 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_planilha(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Envia o link direto da planilha."""
-    if not await check_auth(update):
+    if not await check_auth(update, context):
         return
 
     if not SPREADSHEET_ID:
@@ -176,7 +292,7 @@ async def cmd_planilha(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_resumo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Gera resumo financeiro do mês corrente."""
-    if not await check_auth(update):
+    if not await check_auth(update, context):
         return
 
     if not sheets_service or not SPREADSHEET_ID:
@@ -278,7 +394,7 @@ def format_transaction_card(tx: Dict) -> str:
 
 async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processa mensagens de texto."""
-    if not await check_auth(update):
+    if not await check_auth(update, context):
         return
 
     user_text = update.message.text
@@ -313,7 +429,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processa mensagens de áudio."""
-    if not await check_auth(update):
+    if not await check_auth(update, context):
         return
 
     user_id = update.effective_user.id
@@ -359,7 +475,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processa fotos de comprovantes ou notas fiscais."""
-    if not await check_auth(update):
+    if not await check_auth(update, context):
         return
 
     user_id = update.effective_user.id
@@ -412,6 +528,58 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     user_id = update.effective_user.id
     action = query.data
+
+    # Ações de autorização de novos usuários (Exclusivas do Admin)
+    if action.startswith("auth_approve_"):
+        if user_id != ADMIN_TELEGRAM_USER:
+            await query.edit_message_text("⚠️ Apenas o Administrador pode autorizar novos usuários.")
+            return
+
+        target_id = int(action.replace("auth_approve_", ""))
+        user_info = pending_access_requests.pop(target_id, {"name": f"User_{target_id}", "username": ""})
+        save_allowed_user(target_id, user_info.get("name", "Usuário"), user_info.get("username", ""))
+
+        await query.edit_message_text(
+            f"✅ *ACESSO AUTORIZADO!*\n\n"
+            f"O usuário *{user_info.get('name')}* (ID: `{target_id}`) agora está autorizado a usar o bot.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text=(
+                    "🎉 *Parabéns! Seu acesso foi aprovado pelo Administrador!*\n\n"
+                    "Você já pode enviar suas despesas e receitas por texto livre, áudio ou fotos de comprovantes.\n\n"
+                    "Envie `/start` para começar!"
+                ),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            logger.error(f"Erro ao notificar usuário aprovado: {e}")
+        return
+
+    elif action.startswith("auth_reject_"):
+        if user_id != ADMIN_TELEGRAM_USER:
+            await query.edit_message_text("⚠️ Apenas o Administrador pode gerenciar acessos.")
+            return
+
+        target_id = int(action.replace("auth_reject_", ""))
+        user_info = pending_access_requests.pop(target_id, {"name": f"User_{target_id}"})
+
+        await query.edit_message_text(
+            f"❌ *SOLICITAÇÃO RECUSADA.*\n\nO acesso para *{user_info.get('name')}* (ID: `{target_id}`) foi recusado.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text="❌ Sua solicitação de acesso não foi aprovada pelo Administrador."
+            )
+        except Exception:
+            pass
+        return
 
     if user_id not in pending_transactions:
         await query.edit_message_text("⚠️ Este lançamento expirou ou já foi processado.")
@@ -491,6 +659,60 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(f"❌ Erro ao salvar na planilha: {e}")
 
 
+async def cmd_usuarios(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lista todos os usuários com acesso autorizado (Comando de Admin)."""
+    user_id = update.effective_user.id
+    if user_id != ADMIN_TELEGRAM_USER:
+        await update.message.reply_text("🚫 Este comando é restrito ao Administrador.")
+        return
+
+    users = load_allowed_users()
+    texto = "👥 *Usuários Autorizados no Bot:*\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+    for uid, info in users.items():
+        role = "👑 Admin" if int(uid) == ADMIN_TELEGRAM_USER else "👤 Usuário"
+        nome = info.get("name", "Sem nome")
+        username = f" (@{info.get('username')})" if info.get("username") else ""
+        texto += f"• *{nome}*{username}\n  🆔 ID: `{uid}` | {role}\n\n"
+
+    texto += "━━━━━━━━━━━━━━━━━━━━━\n"
+    texto += "💡 _Para revogar o acesso de alguém, envie:_ `/remover <ID>`"
+    await update.message.reply_text(texto, parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_remover(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remove um usuário da lista de autorizados (Comando de Admin)."""
+    user_id = update.effective_user.id
+    if user_id != ADMIN_TELEGRAM_USER:
+        await update.message.reply_text("🚫 Este comando é restrito ao Administrador.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("⚠️ Informe o ID do usuário que deseja remover.\nExemplo: `/remover 123456789`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    target_id_str = context.args[0].strip()
+    if not target_id_str.isdigit():
+        await update.message.reply_text("⚠️ O ID deve conter apenas números.")
+        return
+
+    target_id = int(target_id_str)
+    if target_id == ADMIN_TELEGRAM_USER:
+        await update.message.reply_text("⚠️ Você não pode remover o próprio Administrador!")
+        return
+
+    if remove_allowed_user(target_id):
+        await update.message.reply_text(f"✅ O acesso do usuário ID `{target_id}` foi revogado com sucesso.", parse_mode=ParseMode.MARKDOWN)
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text="⚠️ Seu acesso ao bot financeiro foi revogado pelo Administrador."
+            )
+        except Exception:
+            pass
+    else:
+        await update.message.reply_text(f"⚠️ Usuário ID `{target_id}` não foi encontrado na lista de autorizados.", parse_mode=ParseMode.MARKDOWN)
+
+
 def main():
     if not TELEGRAM_BOT_TOKEN:
         print("❌ ERRO: Defina a variável TELEGRAM_BOT_TOKEN no arquivo .env")
@@ -503,6 +725,7 @@ def main():
             BotCommand("dashboard", "📊 Abrir painel web de gráficos"),
             BotCommand("resumo", "📅 Ver balanço do mês atual"),
             BotCommand("planilha", "📑 Abrir planilha Google Sheets"),
+            BotCommand("usuarios", "👥 Gerenciar usuários (Admin)"),
             BotCommand("ajuda", "❓ Como usar o assistente")
         ])
 
@@ -520,6 +743,8 @@ def main():
     app.add_handler(CommandHandler("painel", cmd_dashboard))
     app.add_handler(CommandHandler("resumo", cmd_resumo))
     app.add_handler(CommandHandler("planilha", cmd_planilha))
+    app.add_handler(CommandHandler("usuarios", cmd_usuarios))
+    app.add_handler(CommandHandler("remover", cmd_remover))
 
     # Mensagens de texto, áudio e fotos
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message_text))

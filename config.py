@@ -8,6 +8,8 @@ load_dotenv(BASE_DIR / ".env")
 
 # Telegram
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+ADMIN_TELEGRAM_USER = int(os.getenv("ADMIN_TELEGRAM_USER", "8589007485"))
+ALLOWED_USERS_FILE = BASE_DIR / "allowed_users.json"
 ALLOWED_TELEGRAM_USERS = [
     int(uid.strip())
     for uid in os.getenv("ALLOWED_TELEGRAM_USERS", "").split(",")
