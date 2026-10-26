@@ -377,19 +377,30 @@ def format_transaction_card(tx: Dict) -> str:
     tipo_emoji = "🔴 Despesa" if tx.get("tipo") == "Despesa" else "🟢 Receita"
     centro = tx.get("centro_custo", "Indefinido")
     centro_emoji = {"Casa": "🏠", "Consultório": "🩺", "D-CAD": "💻"}.get(centro, "❓")
+    forma = tx.get("forma_pagamento", "Não informado")
+    cartao = tx.get("cartao", "N/A")
+    parcelas = tx.get("parcelas", "À vista")
 
-    lancado_por = tx.get("lancado_por", "Você")
-    return (
+    card = (
         f"📝 *Revisão do Lançamento:*\n\n"
         f"• *Tipo:* {tipo_emoji}\n"
         f"• *Valor:* `R$ {float(tx.get('valor', 0.0)):,.2f}`\n"
         f"• *Centro de Custo:* {centro_emoji} *{centro}*\n"
         f"• *Categoria:* {tx.get('categoria', 'Geral')}\n"
         f"• *Descrição:* {tx.get('descricao', '-')}\n"
-        f"• *Pagamento:* {tx.get('forma_pagamento', 'Não informado')}\n"
+        f"• *Pagamento:* {forma}\n"
+    )
+
+    if forma == "Cartão de Crédito" or (cartao and cartao != "N/A"):
+        card += f"• *Cartão:* 💳 {cartao}\n"
+        card += f"• *Parcelamento:* 🔢 {parcelas}\n"
+
+    lancado_por = tx.get("lancado_por", "Você")
+    card += (
         f"• *Lançado por:* 👤 {lancado_por}\n"
         f"• *Data:* `{tx.get('data', datetime.now().strftime('%Y-%m-%d'))}`\n"
     )
+    return card
 
 
 async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -626,6 +637,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 categoria=tx.get("categoria", "Geral"),
                 descricao=tx.get("descricao", "Sem descrição"),
                 forma_pagamento=tx.get("forma_pagamento", "Não especificado"),
+                cartao=tx.get("cartao", "N/A"),
+                parcelas=tx.get("parcelas", "À vista"),
                 lancado_por=tx.get("lancado_por", "Desconhecido"),
                 origem=tx.get("origem", "Telegram"),
                 data_personalizada=tx.get("data")
@@ -641,15 +654,26 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 ]
             ]
 
-            await query.edit_message_text(
+            msg_sucesso = (
                 f"✅ *Lançamento salvo com sucesso no Google Sheets!*\n\n"
                 f"🆔 *ID:* `{res['id']}`\n"
                 f"📁 *Centro de Custo:* {res['centro_custo']}\n"
                 f"💰 *Valor:* `R$ {res['valor']:,.2f}`\n"
                 f"🏷️ *Categoria:* {res['categoria']}\n"
                 f"📝 *Descrição:* {res['descricao']}\n"
+                f"💳 *Pagamento:* {res['forma_pagamento']}\n"
+            )
+
+            if res.get("cartao") and res.get("cartao") != "N/A":
+                msg_sucesso += f"💳 *Cartão:* {res['cartao']} ({res.get('parcelas', 'À vista')})\n"
+
+            msg_sucesso += (
                 f"👤 *Lançado por:* {res.get('lancado_por', 'Você')}\n\n"
-                f"_A planilha e o dashboard já foram atualizados em tempo real!_",
+                f"_A planilha e o dashboard já foram atualizados em tempo real!_"
+            )
+
+            await query.edit_message_text(
+                msg_sucesso,
                 reply_markup=InlineKeyboardMarkup(success_keyboard),
                 parse_mode=ParseMode.MARKDOWN
             )

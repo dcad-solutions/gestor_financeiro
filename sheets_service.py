@@ -1,4 +1,5 @@
 import uuid
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -10,8 +11,11 @@ from config import (
     GOOGLE_SERVICE_ACCOUNT_FILE,
     SPREADSHEET_ID,
     CENTROS_DE_CUSTO,
-    CATEGORIAS_PADRAO
+    CATEGORIAS_PADRAO,
+    CARTOES_PADRAO
 )
+
+logger = logging.getLogger(__name__)
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -28,9 +32,66 @@ COLUMNS = [
     "Categoria",
     "Descrição",
     "Forma de Pagamento",
+    "Cartão",
+    "Parcelas",
     "Lançado Por",
     "Origem"
 ]
+
+COLUMNS_CARTOES = [
+    "Cartão",
+    "Centro de Custo",
+    "Banco / Emissor",
+    "Limite Total",
+    "Limite Utilizado",
+    "Limite Disponível",
+    "Compras Parceladas",
+    "Dia Fechamento",
+    "Dia Vencimento",
+    "Status"
+]
+
+
+def parse_currency_value(val) -> float:
+    """
+    Converte valor monetário de forma robusta e precisa,
+    garantindo que centavos não sejam multiplicados por 100 ou 1000.
+    """
+    if pd.isna(val) or val is None or val == "":
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+
+    val_str = str(val).strip()
+    val_str = val_str.replace("R$", "").replace("r$", "").strip()
+
+    if not val_str:
+        return 0.0
+
+    # Se tiver ambos '.' e ',', padrão brasileiro clássico: 1.250,50
+    if "." in val_str and "," in val_str:
+        val_str = val_str.replace(".", "").replace(",", ".")
+    elif "," in val_str:
+        # Padrão brasileiro sem separador de milhar: 35,50
+        val_str = val_str.replace(",", ".")
+    elif "." in val_str:
+        # Se tiver apenas '.', verifica se é decimal (35.50 / 35.5) ou milhar (1.000)
+        parts = val_str.split(".")
+        if len(parts) == 2 and len(parts[1]) in (1, 2):
+            # Decimal normal (ex: 35.50) -> mantém o ponto
+            pass
+        elif len(parts) == 2 and len(parts[1]) == 3 and float(parts[0]) > 0:
+            # Milhar sem centavos (ex: 1.000) -> remove o ponto
+            val_str = val_str.replace(".", "")
+        else:
+            # Múltiplos pontos de milhar: 1.000.000
+            val_str = val_str.replace(".", "")
+
+    try:
+        return float(val_str)
+    except ValueError:
+        return 0.0
+
 
 class SheetsService:
     def __init__(self):
@@ -93,20 +154,60 @@ class SheetsService:
             master_sheet.append_row(COLUMNS)
         else:
             master_sheet = self.spreadsheet.worksheet("Todas as Transações")
-            master_sheet.update("A1:K1", [COLUMNS])
+            master_sheet.update("A1:M1", [COLUMNS])
 
-        # 2. Cria abas específicas para cada Centro de Custo usando fórmula automática FILTER
+        # 2. Cria abas específicas para cada Centro de Custo usando fórmula automática FILTER (A2:M)
         for centro in CENTROS_DE_CUSTO:
             if centro not in existing_sheets:
                 sub_sheet = self.spreadsheet.add_worksheet(title=centro, rows=500, cols=len(COLUMNS))
                 sub_sheet.append_row(COLUMNS)
-                formula = f"=IFERROR(FILTER('Todas as Transações'!A2:K, 'Todas as Transações'!D2:D = \"{centro}\"), \"Nenhum registro para {centro}\")"
+                formula = f"=IFERROR(FILTER('Todas as Transações'!A2:M, 'Todas as Transações'!D2:D = \"{centro}\"), \"Nenhum registro para {centro}\")"
                 sub_sheet.update_acell("A2", formula)
             else:
                 sub_sheet = self.spreadsheet.worksheet(centro)
-                sub_sheet.update("A1:K1", [COLUMNS])
-                formula = f"=IFERROR(FILTER('Todas as Transações'!A2:K, 'Todas as Transações'!D2:D = \"{centro}\"), \"Nenhum registro para {centro}\")"
+                sub_sheet.update("A1:M1", [COLUMNS])
+                formula = f"=IFERROR(FILTER('Todas as Transações'!A2:M, 'Todas as Transações'!D2:D = \"{centro}\"), \"Nenhum registro para {centro}\")"
                 sub_sheet.update_acell("A2", formula)
+
+        # 3. Cria ou valida aba 'Controle de Cartões'
+        if "Controle de Cartões" not in existing_sheets:
+            cartoes_sheet = self.spreadsheet.add_worksheet(
+                title="Controle de Cartões", rows=100, cols=len(COLUMNS_CARTOES)
+            )
+            cartoes_sheet.append_row(COLUMNS_CARTOES)
+            for idx, c in enumerate(CARTOES_PADRAO, start=2):
+                linha = [
+                    c["cartao"],
+                    c["centro_custo"],
+                    c["banco"],
+                    float(c["limite_total"]),
+                    f"=IFERROR(SUMIFS('Todas as Transações'!$F$2:$F, 'Todas as Transações'!$J$2:$J, A{idx}, 'Todas as Transações'!$E$2:$E, \"Despesa\"), 0)",
+                    f"=D{idx}-E{idx}",
+                    f"=COUNTIFS('Todas as Transações'!$J$2:$J, A{idx}, 'Todas as Transações'!$K$2:$K, \"<>À vista\", 'Todas as Transações'!$K$2:$K, \"<>\")",
+                    c["dia_fechamento"],
+                    c["dia_vencimento"],
+                    c["status"]
+                ]
+                cartoes_sheet.append_row(linha, value_input_option="USER_ENTERED")
+        else:
+            cartoes_sheet = self.spreadsheet.worksheet("Controle de Cartões")
+            cartoes_sheet.update("A1:J1", [COLUMNS_CARTOES])
+            # Se a aba estiver vazia além do cabeçalho, popula os cartões padrão
+            if len(cartoes_sheet.get_all_values()) <= 1:
+                for idx, c in enumerate(CARTOES_PADRAO, start=2):
+                    linha = [
+                        c["cartao"],
+                        c["centro_custo"],
+                        c["banco"],
+                        float(c["limite_total"]),
+                        f"=IFERROR(SUMIFS('Todas as Transações'!$F$2:$F, 'Todas as Transações'!$J$2:$J, A{idx}, 'Todas as Transações'!$E$2:$E, \"Despesa\"), 0)",
+                        f"=D{idx}-E{idx}",
+                        f"=COUNTIFS('Todas as Transações'!$J$2:$J, A{idx}, 'Todas as Transações'!$K$2:$K, \"<>À vista\", 'Todas as Transações'!$K$2:$K, \"<>\")",
+                        c["dia_fechamento"],
+                        c["dia_vencimento"],
+                        c["status"]
+                    ]
+                    cartoes_sheet.append_row(linha, value_input_option="USER_ENTERED")
 
         # Remove a aba padrão 'Sheet1' ou 'Página1' se for nova
         for default_title in ["Sheet1", "Página1"]:
@@ -124,6 +225,8 @@ class SheetsService:
         categoria: str,
         descricao: str,
         forma_pagamento: str = "Não especificado",
+        cartao: str = "N/A",
+        parcelas: str = "À vista",
         lancado_por: str = "Desconhecido",
         origem: str = "Telegram",
         data_personalizada: Optional[str] = None
@@ -137,10 +240,9 @@ class SheetsService:
         hora_str = agora.strftime("%H:%M:%S")
         transacao_id = str(uuid.uuid4())[:8].upper()
 
-        # Garante padronização
+        # Garante padronização do centro de custo
         centro_formatado = centro_custo.strip()
         if centro_formatado not in CENTROS_DE_CUSTO:
-            # Fallback tolerante
             centro_lower = centro_formatado.lower()
             if "casa" in centro_lower:
                 centro_formatado = "Casa"
@@ -152,6 +254,11 @@ class SheetsService:
                 centro_formatado = "Casa"
 
         tipo_formatado = "Receita" if tipo.lower() in ["receita", "entrada", "ganho"] else "Despesa"
+        valor_float = round(float(valor), 2)
+
+        # Ajusta cartão e parcelas
+        cartao_formatado = cartao.strip() if (cartao and cartao != "None") else "N/A"
+        parcelas_formatado = parcelas.strip() if (parcelas and parcelas != "None") else "À vista"
 
         linha = [
             transacao_id,
@@ -159,10 +266,12 @@ class SheetsService:
             hora_str,
             centro_formatado,
             tipo_formatado,
-            float(valor),
+            valor_float,
             categoria.strip(),
             descricao.strip(),
             forma_pagamento.strip(),
+            cartao_formatado,
+            parcelas_formatado,
             lancado_por.strip(),
             origem.strip()
         ]
@@ -175,15 +284,17 @@ class SheetsService:
             "data": data_str,
             "centro_custo": centro_formatado,
             "tipo": tipo_formatado,
-            "valor": float(valor),
+            "valor": valor_float,
             "categoria": categoria,
             "descricao": descricao,
             "forma_pagamento": forma_pagamento,
+            "cartao": cartao_formatado,
+            "parcelas": parcelas_formatado,
             "lancado_por": lancado_por
         }
 
     def get_all_transactions(self) -> pd.DataFrame:
-        """Carrega todas as transações em um DataFrame do Pandas."""
+        """Carrega todas as transações em um DataFrame do Pandas com tipagem correta."""
         if not self.spreadsheet:
             return pd.DataFrame(columns=COLUMNS)
 
@@ -193,23 +304,36 @@ class SheetsService:
             return pd.DataFrame(columns=COLUMNS)
 
         df = pd.DataFrame(dados)
-        # Converte tipos
+
+        # Converte valores com a função robusta parse_currency_value
         if "Valor" in df.columns:
-            # Limpa caso venha formatado como moeda
-            df["Valor"] = (
-                df["Valor"]
-                .astype(str)
-                .str.replace("R$", "", regex=False)
-                .str.replace(".", "", regex=False)
-                .str.replace(",", ".", regex=False)
-                .str.strip()
-            )
-            df["Valor"] = pd.to_numeric(df["Valor"], errors="coerce").fillna(0.0)
+            df["Valor"] = df["Valor"].apply(parse_currency_value)
 
         if "Data" in df.columns:
             df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
 
         return df
+
+    def get_cartoes_summary(self) -> pd.DataFrame:
+        """Carrega e calcula o resumo de cartões de crédito da aba 'Controle de Cartões'."""
+        if not self.spreadsheet:
+            return pd.DataFrame(columns=COLUMNS_CARTOES)
+
+        try:
+            ws = self.spreadsheet.worksheet("Controle de Cartões")
+            dados = ws.get_all_records()
+            if not dados:
+                return pd.DataFrame(columns=COLUMNS_CARTOES)
+
+            df = pd.DataFrame(dados)
+            for col in ["Limite Total", "Limite Utilizado", "Limite Disponível"]:
+                if col in df.columns:
+                    df[col] = df[col].apply(parse_currency_value)
+
+            return df
+        except Exception as e:
+            logger.error(f"Erro ao buscar cartões: {e}")
+            return pd.DataFrame(columns=COLUMNS_CARTOES)
 
     def get_monthly_summary(self, ano: int, mes: int) -> Dict:
         """Retorna resumo de despesas e receitas do mês por centro de custo."""

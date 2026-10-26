@@ -8,7 +8,8 @@ from PIL import Image
 from config import (
     GEMINI_API_KEY,
     CENTROS_DE_CUSTO,
-    CATEGORIAS_PADRAO
+    CATEGORIAS_PADRAO,
+    CARTOES_PADRAO
 )
 
 if GEMINI_API_KEY:
@@ -17,13 +18,16 @@ if GEMINI_API_KEY:
 MODEL_NAME = "gemini-3.5-flash"
 
 SYSTEM_PROMPT_PARSER = f"""
-Você é um agente assistente financeiro pessoal e corporativo de alta precisão.
+Você é um agente assistente financeiro pessoal e corporativo de altíssima precisão.
 Seu trabalho é extrair dados de despesas ou receitas enviadas pelo usuário (por texto, áudio transcrito ou imagem de comprovante).
 
 Existem exatamente 3 CENTROS DE CUSTO:
 1. "Casa" (Gastos pessoais, família, mercado, moradia pessoal, lazer, etc.)
 2. "Consultório" (Despesas clínicas/médicas/odontológicas, insumos de saúde, secretária, aluguel da clínica, CRO/CRM, etc.)
 3. "D-CAD" (Despesas da empresa de tecnologia / desenho CAD/CAM / prótese digital, licenças de software, blocos de fresagem, impressora 3D, servidores, etc.)
+
+Cartões de crédito conhecidos por centro de custo:
+{json.dumps([c['cartao'] + ' (' + c['centro_custo'] + ')' for c in CARTOES_PADRAO], ensure_ascii=False, indent=2)}
 
 Categorias sugeridas:
 {json.dumps(CATEGORIAS_PADRAO, ensure_ascii=False, indent=2)}
@@ -36,16 +40,24 @@ Sua resposta DEVE SER EXCLUSIVAMENTE um objeto JSON válido, sem crases de códi
   "valor": 0.00,
   "categoria": "Nome da Categoria",
   "descricao": "Descrição clara e concisa do gasto",
-  "forma_pagamento": "Pix" | "Cartão de Crédito" | "Cartão de Débito" | "Boleto" | "Dinheiro" | "Transferência" | "Não especificado",
+  "forma_pagamento": "Cartão de Crédito" | "Cartão de Débito" | "Pix" | "Boleto" | "Dinheiro" | "Transferência" | "Não especificado",
+  "cartao": "Nome do cartão se for Cartão de Crédito (ex: Nubank Casa, Itaú Casa, Inter Consultório, Bradesco D-CAD PJ) ou N/A",
+  "parcelas": "À vista" | "2x" | "3x" | "4x" | "5x" | "6x" | "10x" | "12x" | ...,
   "data": "AAAA-MM-DD" (se o usuário disser ontem/semana passada calcule com base na data de hoje; senão use a data de hoje),
   "observacao": "Alguma observação relevante extraída"
 }}
 
 Regras importantes:
-- Se o usuário não mencionar explicitamente o centro de custo e não for óbvio pelo contexto (ex: "gastei 50 no almoço" pode ser Casa ou D-CAD), defina "centro_custo": "Indefinido" e "confianca_centro_custo": false.
+- O campo "valor" deve ser SEMPRE um número float puro com ponto decimal (ex: 35.50 para R$ 35,50; 1200.00 para R$ 1.200,00). NUNCA multiplique centavos por 100 ou 1000!
+- Se a forma de pagamento for cartão de crédito:
+  * Identifique qual cartão foi citado (ex: "no Nubank", "no Itaú", "no Inter", "no Bradesco", "cartão PJ").
+  * Se não for citado o nome do banco mas disser "no cartão do consultório", escolha o cartão daquele centro de custo.
+  * Se não for citado, coloque o cartão padrão correspondente ao centro de custo.
+  * Se a compra for parcelada (ex: "em 3 vezes", "parcelado em 5x", "10x"), defina o campo "parcelas" com "3x", "5x", etc. Se não mencionar parcelamento, use "À vista".
+- Se NÃO for cartão de crédito, defina "cartao": "N/A" e "parcelas": "À vista".
+- Se o usuário não mencionar explicitamente o centro de custo e não for óbvio pelo contexto (ex: "gastei 50 no almoço"), defina "centro_custo": "Indefinido" e "confianca_centro_custo": false.
 - Se for termo médico/clínico (resina, anestésico, autoclave, jaleco, CRO), classifique como "Consultório" com confianca_centro_custo: true.
 - Se for termo CAD/CAM (exocad, 3shape, fresadora, zircônia, STL, filamento 3D), classifique como "D-CAD" com confianca_centro_custo: true.
-- O campo "valor" deve ser SEMPRE um número float puro (ex: 150.50).
 """
 
 class FinancialAIAgent:
