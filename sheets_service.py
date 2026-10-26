@@ -65,7 +65,7 @@ def parse_currency_value(val) -> float:
     val_str = str(val).strip()
     val_str = val_str.replace("R$", "").replace("r$", "").strip()
 
-    if not val_str:
+    if not val_str or val_str.startswith("#"):
         return 0.0
 
     # Se tiver ambos '.' e ',', padrão brasileiro clássico: 1.250,50
@@ -136,8 +136,12 @@ class SheetsService:
         except Exception:
             pass
 
-        if sheet_id:
-            self.spreadsheet = self.client.open_by_key(sheet_id)
+        if not sheet_id:
+            raise ValueError(
+                "ID da Planilha (SPREADSHEET_ID) não configurado. "
+                "Adicione SPREADSHEET_ID no arquivo .env ou em Secrets no Streamlit Cloud."
+            )
+        self.spreadsheet = self.client.open_by_key(sheet_id)
 
     def ensure_structure(self):
         """Inicializa as abas e cabeçalhos na planilha caso ainda não existam."""
@@ -326,9 +330,41 @@ class SheetsService:
                 return pd.DataFrame(columns=COLUMNS_CARTOES)
 
             df = pd.DataFrame(dados)
+
+            # Filtra apenas linhas com nome do cartão válido
+            if "Cartão" in df.columns:
+                df = df[df["Cartão"].astype(str).str.strip() != ""]
+
+            # Limpa e converte valores monetários com segurança
             for col in ["Limite Total", "Limite Utilizado", "Limite Disponível"]:
                 if col in df.columns:
                     df[col] = df[col].apply(parse_currency_value)
+                else:
+                    df[col] = 0.0
+
+            # Atualiza Limite Utilizado e Compras Parceladas diretamente das transações reais
+            df_tx = self.get_all_transactions()
+            if not df_tx.empty and "Cartão" in df_tx.columns and "Tipo" in df_tx.columns:
+                for idx in df.index:
+                    c_nome = str(df.at[idx, "Cartão"]).strip().lower()
+
+                    # Soma despesas deste cartão
+                    desp_cartao = df_tx[
+                        (df_tx["Cartão"].astype(str).str.strip().str.lower() == c_nome) &
+                        (df_tx["Tipo"] == "Despesa")
+                    ]["Valor"].sum()
+
+                    df.at[idx, "Limite Utilizado"] = float(desp_cartao or 0.0)
+
+                    lim_tot = float(parse_currency_value(df.at[idx, "Limite Total"]))
+                    df.at[idx, "Limite Disponível"] = max(lim_tot - float(desp_cartao or 0.0), 0.0)
+
+                    # Conta compras parceladas ativas (parcelas diferente de À vista ou 1)
+                    parc_mask = (
+                        (df_tx["Cartão"].astype(str).str.strip().str.lower() == c_nome) &
+                        (~df_tx["Parcelas"].astype(str).str.strip().str.lower().isin(["", "à vista", "1", "1x", "n/a", "none"]))
+                    )
+                    df.at[idx, "Compras Parceladas"] = int(parc_mask.sum())
 
             return df
         except Exception as e:
