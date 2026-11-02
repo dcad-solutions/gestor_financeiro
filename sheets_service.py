@@ -107,16 +107,38 @@ class SheetsService:
         # 1. Tenta carregar do Streamlit Secrets (quando hospedado na nuvem do Streamlit)
         try:
             import streamlit as st
+            import json
             if hasattr(st, "secrets"):
                 secret_dict = None
-                if "gcp_service_account" in st.secrets:
+
+                # Suporta formato direto JSON como string: GCP_CREDENTIALS_JSON = '''{...}'''
+                if "GCP_CREDENTIALS_JSON" in st.secrets:
+                    try:
+                        secret_dict = json.loads(st.secrets["GCP_CREDENTIALS_JSON"])
+                    except Exception as e:
+                        logger.warning(f"Erro ao decodificar GCP_CREDENTIALS_JSON: {e}")
+
+                # Suporta formato bloco TOML: [gcp_service_account]
+                if not secret_dict and "gcp_service_account" in st.secrets:
                     secret_dict = dict(st.secrets["gcp_service_account"])
-                elif "gserviceaccount" in st.secrets:
+                elif not secret_dict and "gserviceaccount" in st.secrets:
                     secret_dict = dict(st.secrets["gserviceaccount"])
 
                 if secret_dict:
+                    # Sanitização ultra-robusta da private_key
                     if "private_key" in secret_dict and isinstance(secret_dict["private_key"], str):
-                        secret_dict["private_key"] = secret_dict["private_key"].replace("\\n", "\n")
+                        pk = secret_dict["private_key"].strip()
+                        # Remove aspas extras se foram inseridas acidentalmente
+                        if (pk.startswith('"') and pk.endswith('"')) or (pk.startswith("'") and pk.endswith("'")):
+                            pk = pk[1:-1].strip()
+                        # Normaliza quebras de linha escapadas \n
+                        pk = pk.replace("\\n", "\n").strip()
+                        # Se não tiver quebras de linha mas estiver em linha única separada por espaços
+                        if "-----BEGIN PRIVATE KEY-----" in pk and "\n" not in pk:
+                            body = pk.replace("-----BEGIN PRIVATE KEY-----", "").replace("-----END PRIVATE KEY-----", "").strip()
+                            pk = "-----BEGIN PRIVATE KEY-----\n" + "\n".join(body.split()) + "\n-----END PRIVATE KEY-----\n"
+                        secret_dict["private_key"] = pk
+
                     credentials = Credentials.from_service_account_info(
                         secret_dict, scopes=SCOPES
                     )
