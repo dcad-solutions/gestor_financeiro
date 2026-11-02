@@ -342,25 +342,39 @@ class SheetsService:
         }
 
     def get_all_transactions(self) -> pd.DataFrame:
-        """Carrega todas as transações em um DataFrame do Pandas com tipagem correta."""
+        """Carrega todas as transações em um DataFrame do Pandas com tipagem correta e preservação fiel de dados."""
         if not self.spreadsheet:
             return pd.DataFrame(columns=COLUMNS)
 
-        master_sheet = self.spreadsheet.worksheet("Todas as Transações")
-        dados = master_sheet.get_all_records()
-        if not dados:
+        try:
+            master_sheet = self.spreadsheet.worksheet("Todas as Transações")
+            rows = master_sheet.get_all_values()
+            if not rows or len(rows) <= 1:
+                return pd.DataFrame(columns=COLUMNS)
+
+            headers = rows[0]
+            dados = []
+            for r in rows[1:]:
+                # Preenche colunas faltantes com string vazia
+                if len(r) < len(headers):
+                    r = r + [""] * (len(headers) - len(r))
+                elif len(r) > len(headers):
+                    r = r[:len(headers)]
+                dados.append(dict(zip(headers, r)))
+
+            df = pd.DataFrame(dados)
+
+            # Converte valores com a função robusta parse_currency_value
+            if "Valor" in df.columns:
+                df["Valor"] = df["Valor"].apply(parse_currency_value)
+
+            if "Data" in df.columns:
+                df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
+
+            return df
+        except Exception as e:
+            logger.error(f"Erro ao buscar transações: {e}")
             return pd.DataFrame(columns=COLUMNS)
-
-        df = pd.DataFrame(dados)
-
-        # Converte valores com a função robusta parse_currency_value
-        if "Valor" in df.columns:
-            df["Valor"] = df["Valor"].apply(parse_currency_value)
-
-        if "Data" in df.columns:
-            df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
-
-        return df
 
     def get_cartoes_summary(self) -> pd.DataFrame:
         """Carrega e calcula o resumo de cartões de crédito da aba 'Controle de Cartões'."""

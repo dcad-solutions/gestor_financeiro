@@ -129,9 +129,9 @@ def main():
         if len(usuarios) > 1:
             usuario_selecionado = st.sidebar.selectbox("👤 Lançado Por", ["Todos"] + sorted(usuarios))
 
-    # Filtro de Período
-    opcoes_periodo = ["Mês Atual", "Últimos 30 Dias", "Últimos 90 Dias", "Ano Atual", "Todo o Período", "Personalizado"]
-    periodo_escolhido = st.sidebar.selectbox("Período de Tempo", opcoes_periodo)
+    # Filtro de Período (Padrão: Todo o Período para garantir visibilidade total dos lançamentos)
+    opcoes_periodo = ["Todo o Período", "Últimos 30 Dias", "Mês Atual", "Últimos 90 Dias", "Ano Atual", "Personalizado"]
+    periodo_escolhido = st.sidebar.selectbox("Período de Tempo", opcoes_periodo, index=0)
 
     hoje = datetime.now()
     fim_do_dia = datetime.combine(hoje.date(), datetime.max.time())
