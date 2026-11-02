@@ -108,17 +108,27 @@ class SheetsService:
         try:
             import streamlit as st
             import json
+            import base64
             if hasattr(st, "secrets"):
                 secret_dict = None
 
-                # Suporta formato direto JSON como string: GCP_CREDENTIALS_JSON = '''{...}'''
-                if "GCP_CREDENTIALS_JSON" in st.secrets:
+                # Opção A (Recomendada): String Base64 de uma linha (imune a quebras de linha e PEM errors)
+                if "GCP_CREDENTIALS_BASE64" in st.secrets:
+                    try:
+                        raw_b64 = str(st.secrets["GCP_CREDENTIALS_BASE64"]).strip()
+                        decoded_json = base64.b64decode(raw_b64).decode("utf-8")
+                        secret_dict = json.loads(decoded_json)
+                    except Exception as e:
+                        logger.warning(f"Erro ao decodificar GCP_CREDENTIALS_BASE64: {e}")
+
+                # Opção B: String JSON direta
+                if not secret_dict and "GCP_CREDENTIALS_JSON" in st.secrets:
                     try:
                         secret_dict = json.loads(st.secrets["GCP_CREDENTIALS_JSON"])
                     except Exception as e:
                         logger.warning(f"Erro ao decodificar GCP_CREDENTIALS_JSON: {e}")
 
-                # Suporta formato bloco TOML: [gcp_service_account]
+                # Opção C: Bloco TOML [gcp_service_account]
                 if not secret_dict and "gcp_service_account" in st.secrets:
                     secret_dict = dict(st.secrets["gcp_service_account"])
                 elif not secret_dict and "gserviceaccount" in st.secrets:
@@ -128,12 +138,9 @@ class SheetsService:
                     # Sanitização ultra-robusta da private_key
                     if "private_key" in secret_dict and isinstance(secret_dict["private_key"], str):
                         pk = secret_dict["private_key"].strip()
-                        # Remove aspas extras se foram inseridas acidentalmente
                         if (pk.startswith('"') and pk.endswith('"')) or (pk.startswith("'") and pk.endswith("'")):
                             pk = pk[1:-1].strip()
-                        # Normaliza quebras de linha escapadas \n
                         pk = pk.replace("\\n", "\n").strip()
-                        # Se não tiver quebras de linha mas estiver em linha única separada por espaços
                         if "-----BEGIN PRIVATE KEY-----" in pk and "\n" not in pk:
                             body = pk.replace("-----BEGIN PRIVATE KEY-----", "").replace("-----END PRIVATE KEY-----", "").strip()
                             pk = "-----BEGIN PRIVATE KEY-----\n" + "\n".join(body.split()) + "\n-----END PRIVATE KEY-----\n"
